@@ -18,7 +18,7 @@ function downloadBlob(filename: string, data: BlobPart, type: string) {
   URL.revokeObjectURL(url);
 }
 
-export function ResultsTabs({ research, savedLists, onSaveList, apiConnected }: { research: ResearchResponse; savedLists: SavedList[]; onSaveList: (name: string, rows: DerivedKeyword[]) => void; apiConnected: boolean; }) {
+export function ResultsTabs({ research, savedLists, onSaveList, apiConnected, storageMode, supabaseConnected }: { research: ResearchResponse; savedLists: SavedList[]; onSaveList: (name: string, rows: DerivedKeyword[]) => void; apiConnected: boolean; storageMode: string; supabaseConnected: boolean; }) {
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Overview");
   const [favorites, setFavorites] = useState<DerivedKeyword[]>([]);
 
@@ -121,10 +121,14 @@ export function ResultsTabs({ research, savedLists, onSaveList, apiConnected }: 
       )}
 
       {activeTab === "Settings" && (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-3">
           <article className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <h3 className="text-lg font-semibold">API connectivity</h3>
             <p className="mt-3 text-sm text-slate-500">{apiConnected ? "Connected. Server-side env var detected." : "Missing KEYWORDS_EVERYWHERE_API_KEY. Research will fail until it is configured."}</p>
+          </article>
+          <article className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <h3 className="text-lg font-semibold">Storage mode</h3>
+            <p className="mt-3 text-sm text-slate-500">Current mode: {storageMode}. {supabaseConnected ? "Saved lists are backed by Supabase." : "Using local JSON fallback until Supabase env vars are configured."}</p>
           </article>
           <article className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <h3 className="text-lg font-semibold">Request policy</h3>

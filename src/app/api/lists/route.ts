@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { readSavedLists, writeSavedLists } from "@/lib/storage";
+import { readSavedLists, upsertSavedList } from "@/lib/storage";
 
 export async function GET() {
   const lists = await readSavedLists();
@@ -9,7 +9,6 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const payload = await request.json();
-  const lists = await readSavedLists();
   const list = {
     id: payload.id ?? randomUUID(),
     name: payload.name ?? "Untitled list",
@@ -18,7 +17,6 @@ export async function POST(request: NextRequest) {
     keywords: payload.keywords ?? [],
   };
 
-  const next = [...lists.filter((item) => item.id !== list.id), list];
-  await writeSavedLists(next);
+  await upsertSavedList(list);
   return NextResponse.json(list);
 }

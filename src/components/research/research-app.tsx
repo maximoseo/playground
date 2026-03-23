@@ -19,9 +19,15 @@ const defaults: QueryOptions = {
   longTailOnly: false,
 };
 
+type SettingsStatus = {
+  apiConnected: boolean;
+  storageMode: string;
+  supabaseConnected: boolean;
+};
+
 async function fetchSettingsStatus() {
   const response = await fetch("/api/settings/status");
-  return response.json() as Promise<{ apiConnected: boolean }>;
+  return response.json() as Promise<SettingsStatus>;
 }
 
 async function fetchLists() {
@@ -63,13 +69,16 @@ export function ResearchApp() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["saved-lists"] }),
   });
 
-  const emptyState = useMemo(() => (
-    <section className="rounded-[2rem] border border-dashed border-slate-300 bg-white/70 p-10 text-center shadow-lg dark:border-slate-700 dark:bg-slate-900/60">
-      <p className="text-sm uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">Premium keyword intelligence</p>
-      <h2 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">Research keywords, cluster intent, save opportunities, and export reports.</h2>
-      <p className="mx-auto mt-4 max-w-2xl text-sm leading-7 text-slate-500 dark:text-slate-400">Designed for explicit credit-aware research only. No wasted fetches, no client-side secret leakage, and no fabricated rows.</p>
-    </section>
-  ), []);
+  const emptyState = useMemo(
+    () => (
+      <section className="rounded-[2rem] border border-dashed border-slate-300 bg-white/70 p-10 text-center shadow-lg dark:border-slate-700 dark:bg-slate-900/60">
+        <p className="text-sm uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">Premium keyword intelligence</p>
+        <h2 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">Research keywords, cluster intent, save opportunities, and export reports.</h2>
+        <p className="mx-auto mt-4 max-w-2xl text-sm leading-7 text-slate-500 dark:text-slate-400">Designed for explicit credit-aware research only. No wasted fetches, no client-side secret leakage, and no fabricated rows.</p>
+      </section>
+    ),
+    [],
+  );
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-6 sm:px-6 xl:px-8">
@@ -79,8 +88,10 @@ export function ResearchApp() {
             <p className="text-xs uppercase tracking-[0.22em] text-sky-600 dark:text-sky-400">Playground · Keyword Research SaaS</p>
             <h1 className="mt-2 text-4xl font-semibold tracking-tight text-slate-950 dark:text-white">Premium keyword opportunity workspace</h1>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-600 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300">
-            <strong>Connectivity:</strong> {settingsStatus.data?.apiConnected ? "API ready" : "Missing env var"}
+          <div className="grid gap-2 rounded-3xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-600 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300">
+            <div><strong>API:</strong> {settingsStatus.data?.apiConnected ? "ready" : "missing env var"}</div>
+            <div><strong>Storage:</strong> {settingsStatus.data?.storageMode ?? "checking"}</div>
+            <div><strong>Supabase:</strong> {settingsStatus.data?.supabaseConnected ? "connected" : "not configured"}</div>
           </div>
         </div>
         <SearchForm value={form} onChange={(patch) => setForm((current) => ({ ...current, ...patch }))} onSubmit={() => runResearch.mutate(form)} loading={runResearch.isPending} />
@@ -97,7 +108,14 @@ export function ResearchApp() {
       {research && (
         <>
           <SummaryCards research={research} />
-          <ResultsTabs research={research} apiConnected={Boolean(settingsStatus.data?.apiConnected)} savedLists={savedLists.data ?? []} onSaveList={(name, rows) => saveList.mutate({ name, rows })} />
+          <ResultsTabs
+            research={research}
+            apiConnected={Boolean(settingsStatus.data?.apiConnected)}
+            storageMode={settingsStatus.data?.storageMode ?? "local-json"}
+            supabaseConnected={Boolean(settingsStatus.data?.supabaseConnected)}
+            savedLists={savedLists.data ?? []}
+            onSaveList={(name, rows) => saveList.mutate({ name, rows })}
+          />
         </>
       )}
     </div>
