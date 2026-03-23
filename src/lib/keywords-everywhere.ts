@@ -6,34 +6,43 @@ import { QueryOptions, RawKeywordMetric, ResearchResponse } from "@/lib/types";
 
 const BASE_URL = "https://api.keywordseverywhere.com/v1";
 
-function buildDerivedQuestions(seedKeyword: string, related: RawKeywordMetric[]) {
-  const starters = ["how", "what", "why", "when", "where", "who", "best", "can"];
+function buildDerivedQuestions(related: RawKeywordMetric[]) {
+  const starters = ["how", "what", "why", "when", "where", "who", "best", "can", "is", "are"];
   return related
     .filter((item) => starters.some((starter) => item.keyword.toLowerCase().startsWith(`${starter} `)))
     .map((item) => ({ ...item, sourceType: "derived-question" as const }));
 }
 
-function buildDerivedLongTail(seedKeyword: string, related: RawKeywordMetric[]) {
+function buildDerivedLongTail(related: RawKeywordMetric[]) {
   return related
-    .filter((item) => item.keyword.split(/\s+/).length >= 4 || item.keyword.toLowerCase().includes(seedKeyword.toLowerCase()))
+    .filter((item) => item.keyword.split(/\s+/).length >= 4)
     .map((item) => ({ ...item, sourceType: "derived-long-tail" as const }));
 }
 
-function normalizeKeyword(item: Record<string, unknown>, sourceType: RawKeywordMetric["sourceType"]): RawKeywordMetric | null {
-  const keyword = String(item.keyword ?? item.text ?? item.searchTerm ?? "").trim();
+function normalizeMetric(item: Record<string, unknown>, sourceType: RawKeywordMetric["sourceType"]): RawKeywordMetric | null {
+  const keyword = String(item.keyword ?? "").trim();
   if (!keyword) return null;
+  const cpcField = item.cpc;
+  const cpc = typeof cpcField === "number"
+    ? cpcField
+    : typeof cpcField === "object" && cpcField && "value" in cpcField
+      ? Number((cpcField as { value?: string }).value ?? 0)
+      : null;
+  const trend = Array.isArray(item.trend)
+    ? (item.trend as Array<{ value?: number }>).map((entry) => Number(entry.value ?? 0)).filter((value) => Number.isFinite(value))
+    : null;
   return {
     keyword,
-    volume: typeof item.vol === "number" ? item.vol : typeof item.searchVolume === "number" ? item.searchVolume : typeof item.volume === "number" ? item.volume : null,
-    cpc: typeof item.cpc === "number" ? item.cpc : null,
+    volume: typeof item.vol === "number" ? item.vol : null,
+    cpc: Number.isFinite(cpc ?? NaN) ? cpc : null,
     competition: typeof item.competition === "number" ? item.competition : null,
-    trend: Array.isArray(item.trend) ? (item.trend as number[]) : null,
-    monthlySearches: Array.isArray(item.monthly) ? (item.monthly as number[]) : null,
+    trend,
+    monthlySearches: trend,
     sourceType,
   };
 }
 
-async function callEndpoint(endpoint: string, payload: Record<string, unknown>) {
+async function callEndpoint<T>(endpoint: string, payload: Record<string, unknown>) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
@@ -49,24 +58,18 @@ async function callEndpoint(endpoint: string, payload: Record<string, unknown>) 
       cache: "no-store",
     });
 
+    const json = await response.json();
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Keywords Everywhere ${endpoint} failed (${response.status}): ${text.slice(0, 240)}`);
+      throw new Error(`Keywords Everywhere ${endpoint} failed (${response.status}): ${String(json.description ?? json.message ?? "Unknown upstream error")}`);
     }
-
-    return response.json() as Promise<Record<string, unknown>>;
+    return json as T;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function pickArrayPayload(response: Record<string, unknown>) {
-  const candidates = [response.data, response.keywords, response.results, response.related_keywords, response.pasf_keywords];
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate as Record<string, unknown>[];
-  }
-  return [];
-}
+type RelatedResponse = { data?: string[]; credits_consumed?: number };
+type KeywordDataResponse = { data?: Record<string, unknown>[]; credits_consumed?: number };
 
 function applyFilters(items: ReturnType<typeof enrichKeyword>[], options: QueryOptions) {
   return items.filter((item) => {
@@ -132,40 +135,36 @@ function summarize(keywords: ReturnType<typeof enrichKeyword>[]) {
 export async function runKeywordResearch(options: QueryOptions): Promise<ResearchResponse> {
   const cacheKey = makeCacheKey(options);
   const cached = await getCachedPayload<ResearchResponse>(cacheKey);
-  if (cached) {
-    return {
-      ...cached,
-      meta: { ...cached.meta, cacheHit: true },
-    };
-  }
+  if (cached) return { ...cached, meta: { ...cached.meta, cacheHit: true } };
 
-  const commonPayload = {
-    keywords: [options.seedKeyword],
+  const relatedKeywordResponse = await callEndpoint<RelatedResponse>("get_related_keywords", {
+    keyword: options.seedKeyword,
     country: options.country.toUpperCase(),
     currency: "USD",
     dataSource: "gkp",
-  };
+    num: options.resultCount,
+  });
 
-  const [relatedRes, pasfRes] = await Promise.allSettled([
-    callEndpoint("get_related_keywords", commonPayload),
-    callEndpoint("get_PASF_keywords", commonPayload),
-  ]);
+  const relatedKeywords = (relatedKeywordResponse.data ?? []).slice(0, options.resultCount);
+  const keywordDataResponse = await callEndpoint<KeywordDataResponse>("get_keyword_data", {
+    country: options.country.toUpperCase(),
+    currency: "USD",
+    dataSource: "gkp",
+    kw: relatedKeywords,
+  });
 
-  const relatedRaw = relatedRes.status === "fulfilled" ? pickArrayPayload(relatedRes.value).map((item) => normalizeKeyword(item, "related")).filter(Boolean) as RawKeywordMetric[] : [];
-  const pasfRaw = pasfRes.status === "fulfilled" ? pickArrayPayload(pasfRes.value).map((item) => normalizeKeyword(item, "pasf")).filter(Boolean) as RawKeywordMetric[] : [];
+  const relatedRaw = (keywordDataResponse.data ?? [])
+    .map((item) => normalizeMetric(item, "related"))
+    .filter(Boolean) as RawKeywordMetric[];
 
   const keywordPool = dedupeRawKeywords([
     ...relatedRaw,
-    ...pasfRaw,
-    ...buildDerivedQuestions(options.seedKeyword, relatedRaw),
-    ...buildDerivedLongTail(options.seedKeyword, relatedRaw),
+    ...buildDerivedQuestions(relatedRaw),
+    ...buildDerivedLongTail(relatedRaw),
   ]).slice(0, options.resultCount);
 
   const enriched = sortKeywords(
-    applyFilters(
-      keywordPool.map((item) => enrichKeyword(options.seedKeyword, item, assignCluster(item.keyword))),
-      options,
-    ),
+    applyFilters(keywordPool.map((item) => enrichKeyword(options.seedKeyword, item, assignCluster(item.keyword))), options),
     options.sortBy,
   );
 
@@ -178,16 +177,16 @@ export async function runKeywordResearch(options: QueryOptions): Promise<Researc
       generatedAt: new Date().toISOString(),
       apiSourceLabel: "Keywords Everywhere API",
       cacheHit: false,
-      creditEstimate: pasfRaw.length ? "Related + PASF may consume paid credits. Cache identical queries to avoid duplicate spend." : "Related keywords query may consume paid credits. PASF unavailable or not enabled.",
-      tabsUsingRawData: ["Overview", "Related Keywords", "PASF"],
-      tabsUsingDerivedData: ["Long-Tail Keywords", "Questions", "Clusters"],
+      creditEstimate: `Related keyword expansion + metrics fetch. Upstream credits consumed: ${Number(relatedKeywordResponse.credits_consumed ?? 0) + Number(keywordDataResponse.credits_consumed ?? 0)}.`,
+      tabsUsingRawData: ["Overview", "Related Keywords"],
+      tabsUsingDerivedData: ["Long-Tail Keywords", "Questions", "Clusters", "PASF (empty unless official endpoint is added)"] ,
     },
     overview: summarize(enriched),
     allKeywords: enriched,
     tabs: {
       related: enriched.filter((item) => item.sourceType === "related"),
       longTail: enriched.filter((item) => item.longTail),
-      pasf: enriched.filter((item) => item.sourceType === "pasf"),
+      pasf: [],
       questions: enriched.filter((item) => item.question),
       clusters: summarizeClusters(enriched),
     },
@@ -195,29 +194,4 @@ export async function runKeywordResearch(options: QueryOptions): Promise<Researc
 
   await setCachedPayload(cacheKey, response);
   return response;
-}
-
-export function countryOptions() {
-  return [
-    { value: "us", label: "United States" },
-    { value: "gb", label: "United Kingdom" },
-    { value: "ca", label: "Canada" },
-    { value: "au", label: "Australia" },
-    { value: "il", label: "Israel" },
-  ];
-}
-
-export function languageOptions() {
-  return [
-    { value: "en", label: "English" },
-    { value: "he", label: "Hebrew" },
-  ];
-}
-
-export function sourceLegend() {
-  return [
-    { label: "Raw API", description: "Search volume, CPC, competition, trend data returned directly by Keywords Everywhere." },
-    { label: "Derived", description: "Intent, cluster, long-tail classification, relevance and opportunity scores derived by deterministic app logic." },
-    { label: "App Insight", description: "Summary cards such as best balanced opportunity and dominant intent bucket." },
-  ];
 }
